@@ -5,18 +5,19 @@ use crate::set::Set;
 use std::fmt::{Debug, Display};
 use std::ops::{Add, BitOr, Mul, Neg, Not, Shr, Sub};
 
-type Parse<'a, I, O> = Fn(&'a [I], usize) -> Result<(O, usize)> + 'a;
+type Parse<'a, I, O> = Box<dyn FnMut(&'a [I], usize) -> Result<(O, usize)> + 'a>;
 
 /// Parser combinator.
+#[derive(Clone)]
 pub struct Parser<'a, I, O> {
-	method: Box<Parse<'a, I, O>>,
+	method: Parse<'a, I, O>,
 }
 
 impl<'a, I, O> Parser<'a, I, O> {
 	/// Create new parser.
 	pub fn new<P>(parse: P) -> Parser<'a, I, O>
 	where
-		P: Fn(&'a [I], usize) -> Result<(O, usize)> + 'a,
+		P: FnMut(&'a [I], usize) -> Result<(O, usize)> + 'a,
 	{
 		Parser {
 			method: Box::new(parse),
@@ -24,19 +25,19 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Apply the parser to parse input.
-	pub fn parse(&self, input: &'a [I]) -> Result<O> {
-		(self.method)(input, 0).map(|(out, _)| out)
+	pub fn parse(mut self, input: &'a [I]) -> Result<O> {
+		(self.method)(input, 0).map(move |(out, _)| out)
 	}
 
 	/// Parse input at specified position.
-	pub fn parse_at(&self, input: &'a [I], start: usize) -> Result<(O, usize)> {
+	pub fn parse_at(mut self, input: &'a [I], start: usize) -> Result<(O, usize)> {
 		(self.method)(input, start)
 	}
 
 	/// Convert parser result to desired value.
-	pub fn map<U, F>(self, f: F) -> Parser<'a, I, U>
+	pub fn map<U, F>(mut self, mut f: F) -> Parser<'a, I, U>
 	where
-		F: Fn(O) -> U + 'a,
+		F: FnMut(O) -> U + 'a,
 		I: 'a,
 		O: 'a,
 		U: 'a,
@@ -47,9 +48,9 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Convert parser result to desired value, fail in case of conversion error.
-	pub fn convert<U, E, F>(self, f: F) -> Parser<'a, I, U>
+	pub fn convert<U, E, F>(mut self, mut f: F) -> Parser<'a, I, U>
 	where
-		F: Fn(O) -> ::std::result::Result<U, E> + 'a,
+		F: FnMut(O) -> ::std::result::Result<U, E> + 'a,
 		E: Debug,
 		I: Copy,
 		O: 'a,
@@ -67,7 +68,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Cache parser output result to speed up backtracking.
-	pub fn cache(self) -> Parser<'a, I, O>
+	pub fn cache(mut self) -> Parser<'a, I, O>
 	where
 		O: Clone + 'a,
 	{
@@ -85,7 +86,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Get input position after matching parser.
-	pub fn pos(self) -> Parser<'a, I, usize>
+	pub fn pos(mut self) -> Parser<'a, I, usize>
 	where
 		I: Copy,
 		O: 'a,
@@ -96,7 +97,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Collect all matched input symbols.
-	pub fn collect(self) -> Parser<'a, I, &'a [I]>
+	pub fn collect(mut self) -> Parser<'a, I, &'a [I]>
 	where
 		I: Copy,
 		O: 'a,
@@ -107,7 +108,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Discard parser output.
-	pub fn discard(self) -> Parser<'a, I, ()>
+	pub fn discard(mut self) -> Parser<'a, I, ()>
 	where
 		O: 'a,
 	{
@@ -117,7 +118,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Make parser optional.
-	pub fn opt(self) -> Parser<'a, I, Option<O>>
+	pub fn opt(mut self) -> Parser<'a, I, Option<O>>
 	where
 		O: 'a,
 	{
@@ -133,7 +134,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	/// `p.repeat(0..)` repeat p zero or more times
 	/// `p.repeat(1..)` repeat p one or more times
 	/// `p.repeat(1..4)` match p at least 1 and at most 3 times
-	pub fn repeat<R>(self, range: R) -> Parser<'a, I, Vec<O>>
+	pub fn repeat<R>(mut self, range: R) -> Parser<'a, I, Vec<O>>
 	where
 		R: RangeArgument<usize> + Debug + 'a,
 		I: Copy,
@@ -181,7 +182,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Give parser a name to identify parsing errors.
-	pub fn name(self, name: &'a str) -> Parser<'a, I, O>
+	pub fn name(mut self, name: &'a str) -> Parser<'a, I, O>
 	where
 		I: Copy,
 		O: 'a,
@@ -202,7 +203,7 @@ impl<'a, I, O> Parser<'a, I, O> {
 	}
 
 	/// Mark parser as expected, abort early when failed in ordered choice.
-	pub fn expect(self, name: &'a str) -> Parser<'a, I, O>
+	pub fn expect(mut self, name: &'a str) -> Parser<'a, I, O>
 	where
 		I: Copy,
 		O: 'a,
@@ -296,8 +297,8 @@ pub fn tag<'a, 'b: 'a>(tag: &'b str) -> Parser<'a, char, &'a str> {
 
 /// Parse separated list.
 pub fn list<'a, I, O, U>(
-	parser: Parser<'a, I, O>,
-	separator: Parser<'a, I, U>,
+	mut parser: Parser<'a, I, O>,
+	mut separator: Parser<'a, I, U>,
 ) -> Parser<'a, I, Vec<O>>
 where
 	I: Copy,
@@ -369,10 +370,10 @@ where
 }
 
 /// Success when predicate returns true on current input symbol.
-pub fn is_a<'a, I, F>(predicate: F) -> Parser<'a, I, I>
+pub fn is_a<'a, I, F>(mut predicate: F) -> Parser<'a, I, I>
 where
 	I: Copy + PartialEq + Display + Debug,
-	F: Fn(I) -> bool + 'a,
+	F: FnMut(I) -> bool + 'a,
 {
 	Parser::new(move |input: &'a [I], start: usize| {
 		if let Some(&s) = input.get(start) {
@@ -391,10 +392,10 @@ where
 }
 
 /// Success when predicate returns false on current input symbol.
-pub fn not_a<'a, I, F>(predicate: F) -> Parser<'a, I, I>
+pub fn not_a<'a, I, F>(mut predicate: F) -> Parser<'a, I, I>
 where
 	I: Copy + PartialEq + Display + Debug,
-	F: Fn(I) -> bool + 'a,
+	F: FnMut(I) -> bool + 'a,
 {
 	Parser::new(move |input: &'a [I], start: usize| {
 		if let Some(&s) = input.get(start) {
@@ -443,13 +444,13 @@ where
 }
 
 /// Call a parser factory, can be used to create recursive parsers.
-pub fn call<'a, I, O, F>(parser_factory: F) -> Parser<'a, I, O>
+pub fn call<'a, I, O, F>(mut parser_factory: F) -> Parser<'a, I, O>
 where
 	O: 'a,
-	F: Fn() -> Parser<'a, I, O> + 'a,
+	F: FnMut() -> Parser<'a, I, O> + 'a,
 {
 	Parser::new(move |input: &'a [I], start: usize| {
-		let parser = parser_factory();
+		let mut parser = parser_factory();
 		(parser.method)(input, start)
 	})
 }
@@ -475,7 +476,7 @@ where
 impl<'a, I: Copy, O: 'a, U: 'a> Add<Parser<'a, I, U>> for Parser<'a, I, O> {
 	type Output = Parser<'a, I, (O, U)>;
 
-	fn add(self, other: Parser<'a, I, U>) -> Self::Output {
+	fn add(mut self, mut other: Parser<'a, I, U>) -> Self::Output {
 		Parser::new(move |input: &'a [I], start: usize| {
 			(self.method)(input, start).and_then(|(out1, pos1)| {
 				(other.method)(input, pos1).map(|(out2, pos2)| ((out1, out2), pos2))
@@ -488,7 +489,7 @@ impl<'a, I: Copy, O: 'a, U: 'a> Add<Parser<'a, I, U>> for Parser<'a, I, O> {
 impl<'a, I: Copy, O: 'a, U: 'a> Sub<Parser<'a, I, U>> for Parser<'a, I, O> {
 	type Output = Parser<'a, I, O>;
 
-	fn sub(self, other: Parser<'a, I, U>) -> Self::Output {
+	fn sub(mut self, mut other: Parser<'a, I, U>) -> Self::Output {
 		Parser::new(move |input: &'a [I], start: usize| {
 			(self.method)(input, start)
 				.and_then(|(out1, pos1)| (other.method)(input, pos1).map(|(_, pos2)| (out1, pos2)))
@@ -500,7 +501,7 @@ impl<'a, I: Copy, O: 'a, U: 'a> Sub<Parser<'a, I, U>> for Parser<'a, I, O> {
 impl<'a, I: Copy + 'a, O: 'a, U: 'a> Mul<Parser<'a, I, U>> for Parser<'a, I, O> {
 	type Output = Parser<'a, I, U>;
 
-	fn mul(self, other: Parser<'a, I, U>) -> Self::Output {
+	fn mul(mut self, mut other: Parser<'a, I, U>) -> Self::Output {
 		Parser::new(move |input: &'a [I], start: usize| {
 			(self.method)(input, start)
 				.and_then(|(_, pos1)| (other.method)(input, pos1).map(|(out2, pos2)| (out2, pos2)))
@@ -509,10 +510,10 @@ impl<'a, I: Copy + 'a, O: 'a, U: 'a> Mul<Parser<'a, I, U>> for Parser<'a, I, O> 
 }
 
 /// Chain two parsers where the second parser depends on the first's result.
-impl<'a, I: Copy, O: 'a, U: 'a, F: Fn(O) -> Parser<'a, I, U> + 'a> Shr<F> for Parser<'a, I, O> {
+impl<'a, I: Copy, O: 'a, U: 'a, F: FnMut(O) -> Parser<'a, I, U> + 'a> Shr<F> for Parser<'a, I, O> {
 	type Output = Parser<'a, I, U>;
 
-	fn shr(self, other: F) -> Self::Output {
+	fn shr(mut self, mut other: F) -> Self::Output {
 		Parser::new(move |input: &'a [I], start: usize| {
 			(self.method)(input, start).and_then(|(out, pos)| (other(out).method)(input, pos))
 		})
@@ -523,7 +524,7 @@ impl<'a, I: Copy, O: 'a, U: 'a, F: Fn(O) -> Parser<'a, I, U> + 'a> Shr<F> for Pa
 impl<'a, I, O: 'a> BitOr for Parser<'a, I, O> {
 	type Output = Parser<'a, I, O>;
 
-	fn bitor(self, other: Parser<'a, I, O>) -> Self::Output {
+	fn bitor(mut self, mut other: Parser<'a, I, O>) -> Self::Output {
 		Parser::new(
 			move |input: &'a [I], start: usize| match (self.method)(input, start) {
 				Ok(out) => Ok(out),
@@ -540,7 +541,7 @@ impl<'a, I, O: 'a> BitOr for Parser<'a, I, O> {
 impl<'a, I: Copy + 'static, O: 'a> Neg for Parser<'a, I, O> {
 	type Output = Parser<'a, I, bool>;
 
-	fn neg(self) -> Self::Output {
+	fn neg(mut self) -> Self::Output {
 		Parser::new(move |input: &'a [I], start: usize| {
 			(self.method)(input, start).map(|_| (true, start))
 		})
@@ -551,7 +552,7 @@ impl<'a, I: Copy + 'static, O: 'a> Neg for Parser<'a, I, O> {
 impl<'a, I: Copy, O: 'a> Not for Parser<'a, I, O> {
 	type Output = Parser<'a, I, bool>;
 
-	fn not(self) -> Self::Output {
+	fn not(mut self) -> Self::Output {
 		Parser::new(
 			move |input: &'a [I], start: usize| match (self.method)(input, start) {
 				Ok(_) => Err(Error::Mismatch {

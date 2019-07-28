@@ -54,23 +54,34 @@ fn subcontainer<'a>() -> Parser<'a, u8, (Vec<Container>, Vec<String>)> {
 	)
 }
 
+fn with_indentation<'a, T>(p: Parser<'a, u8, T>) -> Parser<'a, u8, T>
+where
+    T: 'a + Sized,
+{
+    (
+        indented() |
+        empty().map(|()| vec![])
+    ).repeat(0..).map(
+        |lines| lines.into_iter().filter(
+            |line| line.len() > 0
+        ).fold(
+            vec![],
+            |accum, line| accum.into_iter().chain(
+                line.into_iter().chain(vec![b'\n'].into_iter())
+            ).collect()
+        )
+    ).map(|lines| {
+        p.clone().parse(
+            &lines.clone()
+        ).expect("subparse")
+    })
+}
+
 fn container<'a>() -> Parser<'a, u8, Container> {
 	seq(b"Container\n") *
-	(
-		indented() |
-		empty().map(|()| vec![])
-	).repeat(1..).map(
-		|lines| lines.into_iter().filter(
-			|line| line.len() > 0
-		).fold(
-			vec![],
-			|accum, line| accum.into_iter().chain(
-				line.into_iter().chain(vec![b'\n'].into_iter())
-			).collect()
-		)
-	).map(|deden| {
-		subcontainer().parse(&deden).expect("subcont")
-	}).map(|(containers, contents)| Container { containers, contents })
+	with_indentation(
+		subcontainer()
+	).map(|(containers, contents)| Container { containers, contents })
 }
 
 fn mylang<'a>() -> Parser<'a, u8, Vec<Container>> {
